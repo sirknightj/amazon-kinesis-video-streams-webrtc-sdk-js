@@ -27,7 +27,7 @@ jobs:
           clean: true
           clean-exclude: |
             develop/
-            index.html
+            ./index.html
       - name: Deploy to npm packages
         uses: JS-DevTools/npm-publish@v1
         with:
