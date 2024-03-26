@@ -25,9 +25,7 @@ jobs:
           folder: dist
           branch: gh-pages
           clean: true
-          clean-exclude: |
-            develop/
-            ./index.html
+          clean-exclude: develop/
       - name: Deploy to npm packages
         uses: JS-DevTools/npm-publish@v1
         with:
