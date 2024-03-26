@@ -24,6 +24,6 @@ jobs:
         with:
           folder: dist
           branch: gh-pages
-          subfolder: develop
+          target-folder: develop
           subdomain: develop
           clean: true
