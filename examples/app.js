@@ -320,6 +320,7 @@ function updateViewerUI() {
     $('#master-section-heading').text('Return Channel');
     $('#master-viewer-heading').text('From Master');
     $('#master-viewer-heading').addClass('d-none');
+    $('#master-section-heading').addClass('d-none');
     $('#stop-master-button').text('Stop Viewer');
     $('#master-data-channel-input').text('DataChannel message to send to master');
     $('#master-button').click();
