@@ -260,31 +260,40 @@ $('#viewer-button').click(async () => {
 
     $('#viewer-button').addClass('d-none');
 
-    if (formValues.autoDetermineMediaIngestMode) {
-        channelHelper = new ChannelHelper(formValues.channelName,
-            {
-                region: formValues.region,
-                credentials: {
-                    accessKeyId: formValues.accessKeyId,
-                    secretAccessKey: formValues.secretAccessKey,
-                    sessionToken: formValues.sessionToken,
-                },
-            },
-            formValues.endpoint,
-            KVSWebRTC.Role.VIEWER,
-            ChannelHelper.IngestionMode.DETERMINE_THROUGH_DESCRIBE,
-            '[VIEWER]',
-            formValues.clientId,
-            formValues.logAwsSdkCalls ? console : undefined);
-        await channelHelper.determineMediaIngestionPath();
+    console.log('asdfnbsahfdasjfbadsfasdfasdfas!!!!!');
 
-        if (channelHelper.isIngestionEnabled()) {
+    try {
+        if (formValues.autoDetermineMediaIngestMode) {
+            channelHelper = new ChannelHelper(formValues.channelName,
+                {
+                    region: formValues.region,
+                    credentials: {
+                        accessKeyId: formValues.accessKeyId,
+                        secretAccessKey: formValues.secretAccessKey,
+                        sessionToken: formValues.sessionToken,
+                    },
+                },
+                formValues.endpoint,
+                KVSWebRTC.Role.VIEWER,
+                ChannelHelper.IngestionMode.DETERMINE_THROUGH_DESCRIBE,
+                '[VIEWER]',
+                formValues.clientId,
+                formValues.logAwsSdkCalls ? console : undefined);
+            await channelHelper.determineMediaIngestionPath();
+
+            if (channelHelper.isIngestionEnabled()) {
+                updateViewerUI();
+                return;
+            }
+        } else if (formValues.mediaIngestionModeOverride) {
+            channelHelper = null;
             updateViewerUI();
             return;
         }
-    } else if (formValues.mediaIngestionModeOverride) {
-        channelHelper = null;
+    } catch (e) {
+        console.log('asdfsafdasf');
         updateViewerUI();
+        errorMessage('Expired credentials, please re-scan the QR code');
         return;
     }
 
