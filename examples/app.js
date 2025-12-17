@@ -1,8 +1,19 @@
 let ROLE = null; // Possible values: 'MASTER', 'VIEWER', null
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
 let LOG_LEVEL = 'info'; // Possible values: any value of LOG_LEVELS
-let randomClientId = getRandomClientId(); // Holder for randomly-generated client id
 let channelHelper = null; // Holder for channelHelper
+
+// All supported codecs
+const allVCodecs = RTCRtpSender.getCapabilities('video').codecs;
+const allACodecs = RTCRtpSender.getCapabilities('audio').codecs;
+const uniqueVMimeTypes = [...new Set(allVCodecs.map((codec) => codec.mimeType))].sort();
+const uniqueAMimeTypes = [...new Set(allACodecs.map((codec) => codec.mimeType))].sort();
+
+// Default-enabled codecs
+const DEFAULT_CODECS = {
+    video: ['video/H264'].sort(),
+    audio: ['audio/opus'].sort(),
+};
 
 function configureLogging() {
     function log(level, messages) {
@@ -63,17 +74,29 @@ function configureLogging() {
 }
 
 function getRandomClientId() {
-    return Math.random()
-        .toString(36)
-        .substring(2)
-        .toUpperCase();
+    const timestamp = Date.now().toString(36);
+    const random = Math.random().toString(36).substring(2);
+    return `${timestamp}-${random}`;
+}
+
+function getTabScopedClientID() {
+    try {
+        let stored_ID = sessionStorage.getItem('viewer-client-id');
+        if(!stored_ID) {
+            stored_ID = getRandomClientId(); //if no client ID acquired before
+            sessionStorage.setItem('viewer-client-id', stored_ID);
+        }
+        return stored_ID;
+    } catch (e) {
+        return getRandomClientId();
+    }
 }
 
 function getFormValues() {
     return {
         region: $('#region').val(),
         channelName: $('#channelName').val(),
-        clientId: $('#clientId').val() || randomClientId,
+        clientId: $('#clientId').val() || getTabScopedClientID(),
         sendVideo: $('#sendVideo').is(':checked'),
         sendAudio: $('#sendAudio').is(':checked'),
         streamName: $('#streamName').val(),
@@ -106,7 +129,12 @@ function getFormValues() {
         sendUdpCandidates: $('#send-udp').is(':checked'),
         acceptUdpCandidates: $('#accept-udp').is(':checked'),
         mediaIngestionModeOverride: $('#ingest-media-manual-on').attr('data-selected') === 'true',
+        signalingReconnect: $('#signaling-reconnect').is(':checked'),
         logAwsSdkCalls: $('#log-aws-sdk-calls').is(':checked'),
+        turnWithUdp: $('#turn-with-udp').is(':checked'),
+        turnsWithUdp: $('#turns-with-udp').is(':checked'),
+        turnsWithTcp: $('#turns-with-tcp').is(':checked'),
+        oneTurnServerSetOnly: $('#turn-one-set-only').is(':checked'),
     };
 }
 
@@ -219,22 +247,24 @@ $('#viewer-button').click(async () => {
     if (!form[0].checkValidity()) {
         return;
     }
-    randomClientId = getRandomClientId();
     const formValues = getFormValues();
 
     if (formValues.autoDetermineMediaIngestMode) {
         channelHelper = new ChannelHelper(formValues.channelName,
             {
                 region: formValues.region,
-                accessKeyId: formValues.accessKeyId,
-                secretAccessKey: formValues.secretAccessKey,
-                sessionToken: formValues.sessionToken,
+                credentials: {
+                    accessKeyId: formValues.accessKeyId,
+                    secretAccessKey: formValues.secretAccessKey,
+                    sessionToken: formValues.sessionToken,
+                },
             },
             formValues.endpoint,
             KVSWebRTC.Role.VIEWER,
             ChannelHelper.IngestionMode.DETERMINE_THROUGH_DESCRIBE,
             '[VIEWER]',
-            formValues.clientId);
+            formValues.clientId,
+            formValues.logAwsSdkCalls ? console : undefined);
         await channelHelper.determineMediaIngestionPath();
 
         if (channelHelper.isIngestionEnabled()) {
@@ -444,11 +474,44 @@ async function printPeerConnectionStateInfo(event, logPrefix, remoteClientId) {
             const trackType = sender.track?.kind;
             if (sender.transport) {
                 const iceTransport = sender.transport.iceTransport;
-                if (iceTransport) {
+                if (iceTransport && typeof iceTransport.getSelectedCandidatePair === 'function') {
                     const logSelectedCandidate = () =>
                         console.debug(`Chosen candidate pair (${trackType || 'unknown'}):`, iceTransport.getSelectedCandidatePair());
                     iceTransport.onselectedcandidatepairchange = logSelectedCandidate;
                     logSelectedCandidate();
+                } else {
+                    // Find nominated candidate pair
+                    const nominatedPair = Array.from(stats.values()).find(report => 
+                    report.type === 'candidate-pair' && 
+                    report.nominated === true
+                    );
+            
+                    if (nominatedPair) {
+                        // Get local and remote candidate detailsl;                     
+                        const localCandidate = stats.get(nominatedPair.localCandidateId);
+                        const remoteCandidate = stats.get(nominatedPair.remoteCandidateId);
+                        
+                        if (localCandidate && remoteCandidate) {
+                            console.debug(`Chosen candidate pair (${trackType || 'unknown'}):`, {
+                                local: {
+                                    id: localCandidate.id,
+                                    address: localCandidate.address,
+                                    port: localCandidate.port,
+                                    type: localCandidate.candidateType,
+                                    protocol: localCandidate.protocol,
+                                    priority: localCandidate.priority
+                                },
+                                remote: {
+                                    id: remoteCandidate.id,
+                                    address: remoteCandidate.address,
+                                    port: remoteCandidate.port,
+                                    type: remoteCandidate.candidateType,
+                                    protocol: remoteCandidate.protocol,
+                                    priority: remoteCandidate.priority
+                                }
+                            });
+                        }
+                    }
                 }
             } else {
                 console.error('Failed to fetch the candidate pair!');
@@ -459,9 +522,7 @@ async function printPeerConnectionStateInfo(event, logPrefix, remoteClientId) {
             removeViewerTrackFromMaster(remoteClientId);
         }
         console.error(logPrefix, `Connection to ${remoteClientId || 'peer'} failed!`);
-        if (ROLE === 'MASTER') {
-            onPeerConnectionFailed(remoteClientId);
-        }
+        onPeerConnectionFailed(remoteClientId);
     }
 }
 
@@ -544,7 +605,13 @@ const fields = [
     {field: 'accept-tcp', type: 'checkbox'},
     {field: 'send-udp', type: 'checkbox'},
     {field: 'accept-udp', type: 'checkbox'},
+    {field: 'signaling-reconnect', type: 'checkbox'},
     {field: 'log-aws-sdk-calls', type: 'checkbox'},
+    {field: 'codec-filter-toggle', type: 'checkbox'},
+    {field: 'turn-with-udp', type: 'checkbox'},
+    {field: 'turns-with-udp', type: 'checkbox'},
+    {field: 'turns-with-tcp', type: 'checkbox'},
+    {field: 'turn-one-set-only', type: 'checkbox'},
 ];
 
 fields.forEach(({field, type, name}) => {
@@ -834,16 +901,6 @@ function updateIngestMediaPrompt() {
 
 updateIngestMediaPrompt();
 
-function configureAwsSdkLogs() {
-    if ($('#log-aws-sdk-calls').is(':checked')) {
-        AWS.config.logger = console;
-    } else {
-        AWS.config.logger = undefined;
-    }
-}
-
-configureAwsSdkLogs();
-
 // Enable tooltips
 $(document).ready(function () {
     $('[data-toggle="tooltip"]').tooltip();
@@ -852,8 +909,176 @@ $(document).ready(function () {
     $('#copy-tooltip').tooltip({trigger: 'manual'});
 });
 
+function saveCodecPreferences() {
+    const videoCodecs = [];
+    const audioCodecs = [];
+
+    $('input[name="vcodec"]:checked').each(function () {
+        videoCodecs.push($(this).val());
+    });
+
+    $('input[name="acodec"]:checked').each(function () {
+        audioCodecs.push($(this).val());
+    });
+
+    localStorage.setItem('videoCodecs', JSON.stringify(videoCodecs));
+    localStorage.setItem('audioCodecs', JSON.stringify(audioCodecs));
+
+    /** @type {string[]} */
+    const selectedVideoMimeTypes = Array.from($('input[name="vcodec"]:checked')).map((selectElement) => $(selectElement).val()).sort();
+
+    /** @type {string[]} */
+    const selectedAudioMimeTypes = Array.from($('input[name="acodec"]:checked')).map((selectElement) => $(selectElement).val()).sort();
+
+    $('#reset-codecs').prop(
+        'disabled',
+        JSON.stringify(selectedVideoMimeTypes) === JSON.stringify(DEFAULT_CODECS.video) &&
+            JSON.stringify(selectedAudioMimeTypes) === JSON.stringify(DEFAULT_CODECS.audio),
+    );
+}
+
+function loadCodecPreferences() {
+    const savedVideoCodecs = JSON.parse(localStorage.getItem('videoCodecs')) || DEFAULT_CODECS.video;
+    const savedAudioCodecs = JSON.parse(localStorage.getItem('audioCodecs')) || DEFAULT_CODECS.audio;
+
+    $('input[name="vcodec"]').each(function () {
+        $(this).prop('checked', savedVideoCodecs.includes($(this).val()));
+    });
+
+    $('input[name="acodec"]').each(function () {
+        $(this).prop('checked', savedAudioCodecs.includes($(this).val()));
+    });
+
+    if ($('#codec-filter-toggle').is(':checked')) {
+        $('#codecOptions').removeClass('d-none');
+    } else {
+        $('#codecOptions').addClass('d-none');
+    }
+
+    saveCodecPreferences();
+}
+
+async function resetCodecPreferences() {
+    $('input[name="vcodec"]').each(function() {
+        $(this).prop('checked', DEFAULT_CODECS.video.includes($(this).val()));
+    });
+
+    $('input[name="acodec"]').each(function() {
+        $(this).prop('checked', DEFAULT_CODECS.audio.includes($(this).val()));
+    });
+
+    saveCodecPreferences();
+
+    $('#reset-codecs').removeClass('btn-primary');
+    $('#reset-codecs').addClass('btn-success');
+    await new Promise((r) => setTimeout(r, 200));
+    $('#reset-codecs').removeClass('btn-success');
+    $('#reset-codecs').addClass('btn-primary');
+}
+
+// Create codec checkboxes
+uniqueVMimeTypes.forEach((codec) => {
+    $('#videoCodecs').append(`
+                <div class="form-check">
+                    <label class="form-check-label">
+                        <input class="form-check-input"
+                               type="checkbox"
+                               name="vcodec"
+                               onchange="saveCodecPreferences()"
+                               value="${codec}"
+                               ${DEFAULT_CODECS.video.includes(codec) ? 'checked' : ''}>
+                        ${codec}
+                    </label>
+                </div>
+            `);
+});
+
+uniqueAMimeTypes.forEach((codec) => {
+    $('#audioCodecs').append(`
+                <div class="form-check">
+                    <label class="form-check-label">
+                        <input class="form-check-input"
+                               type="checkbox"
+                               name="acodec"
+                               onchange="saveCodecPreferences()"
+                               value="${codec}"
+                               ${DEFAULT_CODECS.audio.includes(codec) ? 'checked' : ''}>
+                        ${codec}
+                    </label>
+                </div>
+            `);
+});
+
+$('#codec-filter-toggle').on('change', (event) => {
+    if (event.target.checked) {
+        $('#codecOptions').removeClass('d-none');
+    } else {
+        $('#codecOptions').addClass('d-none');
+    }
+});
+
+$(document).ready(() => {
+    loadCodecPreferences();
+    
+    // click start based on the url params
+    if (urlParams.has('view')) {
+        const viewMode = urlParams.get('view');
+        if (viewMode === 'master') {
+            $('#master-button').click();
+        } else if (viewMode === 'viewer') {
+            $('#viewer-button').click();
+        }
+    }
+});
+
+/**
+ * Returns the selected codec filters. The results can be passed to setCodecPreferences.
+ * Calling setCodecPreferences with an empty array is equivalent to specifying no filter.
+ *
+ * @returns {[RTCRtpCodec[], RTCRtpCodec[]]} filtered codecs. Video comes first, then audio.
+ * @see {@link https://chromium.googlesource.com/chromium/src/+/HEAD/third_party/blink/web_tests/external/wpt/webrtc/RTCRtpTransceiver-setCodecPreferences.html}
+ */
+function getCodecFilters() {
+    const role = ROLE;
+
+    if (!$('#codec-filter-toggle').is(':checked')) {
+        // Filter is disabled - enable everything
+        return [[], []];
+    }
+
+    /** @type {string[]} */
+    const selectedVideoMimeTypes = Array.from($('input[name="vcodec"]:checked')).map((selectElement) => $(selectElement).val());
+
+    /** @type {RTCRtpCodec[]} */
+    const filteredVideoCodecs = selectedVideoMimeTypes.flatMap((mimeType) => {
+        return allVCodecs.filter((codec) => codec.mimeType === mimeType);
+    });
+
+    /** @type {string[]} */
+    const selectedAudioMimeTypes = Array.from($('input[name="acodec"]:checked')).map((selectElement) => $(selectElement).val());
+
+    /** @type {RTCRtpCodec[]} */
+    const filteredAudioCodecs = selectedAudioMimeTypes.flatMap((mimeType) => {
+        return allACodecs.filter((codec) => codec.mimeType === mimeType);
+    });
+
+    console.log(
+        `[${role}]`,
+        `Filters: Video: ${selectedVideoMimeTypes.length ? selectedVideoMimeTypes : 'No filter'}, Audio: ${selectedAudioMimeTypes.length ? selectedAudioMimeTypes : 'No filter'}`,
+    );
+
+    console.debug(
+        `[${role}]`,
+        `All accepted codecs: Video:`,
+        filteredVideoCodecs.length ? filteredVideoCodecs : 'ALL',
+        'Audio:',
+        filteredAudioCodecs.length ? filteredAudioCodecs : 'ALL',
+    );
+
+    return [filteredVideoCodecs, filteredAudioCodecs];
+}
+
 // The page is all setup. Hide the loading spinner and show the page content.
 $('.loader').addClass('d-none');
 $('#main').removeClass('d-none');
 console.log('Page loaded');
-

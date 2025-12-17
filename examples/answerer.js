@@ -97,7 +97,7 @@ class Answerer {
             // `candidate` will be the empty string if the event indicates that there are no further candidates
             // to come in this generation, or null if all ICE gathering on all transports is complete.
             // https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/icecandidate_event
-            if (candidate) {
+            if (candidate && candidate.candidate) {
                 console.log(this._loggingPrefix, 'Generated ICE candidate for', this._remoteClientId || 'remote');
                 console.debug(this._loggingPrefix, 'ICE candidate:', candidate);
 
@@ -110,6 +110,8 @@ class Answerer {
                         console.log(this._loggingPrefix, 'Not sending ICE candidate to', this._remoteClientId || 'remote');
                     }
                 }
+            } else if (candidate && !candidate.candidate) {
+                    //firefox special case, candidate with null candidate field
             } else {
                 console.log(this._loggingPrefix, 'All ICE candidates have been generated for', this._remoteClientId || 'remote');
 
@@ -127,7 +129,17 @@ class Answerer {
         // We receive this event when the remote peer adds a new track to the PeerConnection
         // https://webrtc.org/getting-started/remote-streams#adding_remote_tracks
         this._peerConnection.addEventListener('track', event => {
-            console.log(this._loggingPrefix, 'Received track from', this._remoteClientId || 'remote', 'with track id:', event?.streams[0]?.id ?? '[Error retrieving track ID]');
+            console.log(
+                this._loggingPrefix,
+                'Received',
+                event.track.kind || 'unknown',
+                'track from',
+                this._remoteClientId || 'remote',
+                'in mediaStream:',
+                event?.streams[0]?.id ?? '[Error retrieving stream ID]',
+                'with track id:',
+                event.track.id,
+            );
             this._onMediaStreamsUpdated(event.streams);
         });
 
@@ -137,6 +149,15 @@ class Answerer {
         }
 
         await this._peerConnection.setRemoteDescription(this._offer);
+
+        const [videoCodecs, audioCodecs] = getCodecFilters();
+        this._peerConnection.getTransceivers().map(async (transceiver) => {
+            if (transceiver.receiver.track.kind === 'video' && videoCodecs) {
+                transceiver.setCodecPreferences(videoCodecs);
+            } else if (transceiver.receiver.track.kind === 'audio' && audioCodecs) {
+                transceiver.setCodecPreferences(audioCodecs);
+            }
+        });
 
         // Create an SDP answer to send back to the client
         console.log(this._loggingPrefix, 'Creating SDP answer for', this._remoteClientId || 'remote');

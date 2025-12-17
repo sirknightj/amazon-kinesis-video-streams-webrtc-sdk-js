@@ -268,12 +268,11 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
         viewer.localView = localView;
         viewer.remoteView = remoteView;
 
-        viewer.remoteView.addEventListener('loadeddata', () => {
+        viewer.loadedDataCallback = () => {
             metrics.viewer.ttff.endTime = Date.now();
             if (formValues.enableProfileTimeline) {
                 metrics.viewer.ttffAfterPc.endTime = metrics.viewer.ttff.endTime;
                 metrics.master.ttffAfterPc.endTime = metrics.viewer.ttff.endTime;
-
 
                 // if the ice-gathering on the master side is not complete by the time the metrics are sent, the endTime > startTime
                 // in order to plot it, we can show it as an ongoing process
@@ -281,11 +280,13 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
                     metrics.master.iceGathering.endTime = metrics.viewer.ttff.endTime;
                 }
             }
-            if(formValues.enableDQPmetrics) {
+            if (formValues.enableDQPmetrics) {
                 timeToFirstFrameFromOffer = metrics.viewer.ttff.endTime - metrics.viewer.offAnswerTime.startTime;
                 timeToFirstFrameFromViewerStart = metrics.viewer.ttff.endTime - viewerButtonPressed.getTime();
             }
-        });
+        };
+
+        viewer.remoteView.addEventListener('loadeddata', viewer.loadedDataCallback);
 
         if (formValues.enableProfileTimeline) {
             metrics.viewer.ttff.startTime = viewerButtonPressed.getTime();
@@ -357,11 +358,13 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
         metrics.viewer.signaling.startTime = Date.now();
 
         // Create KVS client
-        const kinesisVideoClient = new AWS.KinesisVideo({
+        const kinesisVideoClient = new AWS.KinesisVideo.KinesisVideoClient({
             region: formValues.region,
-            accessKeyId: formValues.accessKeyId,
-            secretAccessKey: formValues.secretAccessKey,
-            sessionToken: formValues.sessionToken,
+            credentials: {
+                accessKeyId: formValues.accessKeyId,
+                secretAccessKey: formValues.secretAccessKey,
+                sessionToken: formValues.sessionToken,
+            },
             endpoint: formValues.endpoint,
             correctClockSkew: true,
         });
@@ -370,10 +373,9 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
         metrics.viewer.describeChannel.startTime = Date.now();
 
         const describeSignalingChannelResponse = await kinesisVideoClient
-            .describeSignalingChannel({
+            .send(new AWS.KinesisVideo.DescribeSignalingChannelCommand({
                 ChannelName: formValues.channelName,
-            })
-            .promise();
+            }));
 
         metrics.viewer.describeChannel.endTime = Date.now();
 
@@ -386,10 +388,9 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
             metrics.viewer.describeMediaStorageConfiguration.startTime = Date.now();
 
             const mediaStorageConfiguration = await kinesisVideoClient
-                .describeMediaStorageConfiguration({
+                .send(new AWS.KinesisVideo.DescribeMediaStorageConfigurationCommand({
                     ChannelName: formValues.channelName,
-                })
-                .promise();
+                }));
 
             metrics.viewer.describeMediaStorageConfiguration.endTime = Date.now();
 
@@ -408,14 +409,13 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
         metrics.viewer.channelEndpoint.startTime = Date.now();
 
         const getSignalingChannelEndpointResponse = await kinesisVideoClient
-            .getSignalingChannelEndpoint({
+            .send(new AWS.KinesisVideo.GetSignalingChannelEndpointCommand({
                 ChannelARN: channelARN,
                 SingleMasterChannelEndpointConfiguration: {
                     Protocols: ['WSS', 'HTTPS'],
                     Role: KVSWebRTC.Role.VIEWER,
                 },
-            })
-            .promise();
+            }));
 
         metrics.viewer.channelEndpoint.endTime = Date.now();
 
@@ -425,11 +425,13 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
         }, {});
         console.log('[VIEWER] Endpoints:', endpointsByProtocol);
 
-        const kinesisVideoSignalingChannelsClient = new AWS.KinesisVideoSignalingChannels({
+        const kinesisVideoSignalingChannelsClient = new AWS.KinesisVideoSignaling.KinesisVideoSignalingClient({
             region: formValues.region,
-            accessKeyId: formValues.accessKeyId,
-            secretAccessKey: formValues.secretAccessKey,
-            sessionToken: formValues.sessionToken,
+            credentials: {
+                accessKeyId: formValues.accessKeyId,
+                secretAccessKey: formValues.secretAccessKey,
+                sessionToken: formValues.sessionToken,
+            },
             endpoint: endpointsByProtocol.HTTPS,
             correctClockSkew: true,
         });
@@ -439,28 +441,53 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
         metrics.viewer.iceServerConfig.startTime = Date.now();
 
         const getIceServerConfigResponse = await kinesisVideoSignalingChannelsClient
-            .getIceServerConfig({
+            .send(new AWS.KinesisVideoSignaling.GetIceServerConfigCommand({
                 ChannelARN: channelARN,
-            })
-            .promise();
+            }));
 
         metrics.viewer.iceServerConfig.endTime = Date.now();
 
         const iceServers = [];
         // Don't add stun if user selects TURN only or NAT traversal disabled
-        if (!formValues.natTraversalDisabled && !formValues.forceTURN) {
+        if (!formValues.natTraversalDisabled && !formValues.forceTURN && formValues.sendSrflxCandidates) {
             iceServers.push({ urls: `stun:stun.kinesisvideo.${formValues.region}.amazonaws.com:443` });
         }
 
         // Don't add turn if user selects STUN only or NAT traversal disabled
         if (!formValues.natTraversalDisabled && !formValues.forceSTUN) {
+            let turnServers = [];
             getIceServerConfigResponse.IceServerList.forEach(iceServer =>
-                iceServers.push({
+                turnServers.push({
                     urls: iceServer.Uris,
                     username: iceServer.Username,
                     credential: iceServer.Password,
                 }),
             );
+
+            // Filter TURN servers
+            if (!formValues.turnWithUdp || !formValues.turnsWithUdp || !formValues.turnsWithTcp) {
+                turnServers = turnServers.map((config) => {
+                    return {
+                        urls: config.urls.filter((url) => {
+                            if (url.startsWith('turn:') && url.endsWith('?transport=udp')) {
+                                return formValues.turnWithUdp;
+                            } else if (url.startsWith('turns:') && url.endsWith('?transport=udp')) {
+                                return formValues.turnsWithUdp;
+                            } else if (url.startsWith('turns:') && url.endsWith('?transport=tcp')) {
+                                return formValues.turnsWithTcp;
+                            }
+                        }),
+                        username: config.username,
+                        credential: config.credential,
+                    };
+                });
+            }
+
+            if (formValues.oneTurnServerSetOnly) {
+                turnServers = [turnServers[Math.floor(Math.random() * turnServers.length)]];
+            }
+
+            iceServers.push(...turnServers);
         }
         console.log('[VIEWER] ICE servers:', iceServers);
 
@@ -682,6 +709,15 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
                 }
             }
 
+            const [videoCodecs, audioCodecs] = getCodecFilters();
+            viewer.peerConnection.getTransceivers().map((transceiver) => {
+                if (transceiver.receiver.track.kind === 'video' && videoCodecs) {
+                    transceiver.setCodecPreferences(videoCodecs);
+                } else if (transceiver.receiver.track.kind === 'audio' && audioCodecs) {
+                    transceiver.setCodecPreferences(audioCodecs);
+                }
+            });
+
             metrics.viewer.setupMediaPlayer.endTime = Date.now();
             timeToSetUpViewerMedia = metrics.viewer.setupMediaPlayer.endTime - metrics.viewer.setupMediaPlayer.startTime;
 
@@ -733,7 +769,7 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
 
         // Send any ICE candidates to the other peer
         viewer.peerConnection.addEventListener('icecandidate', ({ candidate }) => {
-            if (candidate) {
+            if (candidate && candidate.candidate) {
                 console.log('[VIEWER] Generated ICE candidate');
                 console.debug('ICE candidate:', candidate);
 
@@ -746,6 +782,8 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
                         console.log('[VIEWER] Not sending ICE candidate');
                     }
                 }
+            } else if (candidate && !candidate.candidate) {
+                //firefox special case, candidate with null candidate field
             } else {
                 console.log('[VIEWER] All ICE candidates have been generated');
 
@@ -764,7 +802,16 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
 
         // As remote tracks are received, add them to the remote view
         viewer.peerConnection.addEventListener('track', event => {
-            console.log('[VIEWER] Received remote track with id:', event?.streams[0]?.id ?? '[Error retrieving track ID]');
+            console.log(
+                '[VIEWER] Received',
+                event.track.kind || 'unknown',
+                'track from',
+                this._remoteClientId || 'remote',
+                'in mediaStream:',
+                event?.streams[0]?.id ?? '[Error retrieving stream ID]',
+                'with track id:',
+                event.track.id,
+            );
             if (remoteView.srcObject) {
                 return;
             }
@@ -818,6 +865,7 @@ function stopViewer() {
         }
 
         if (viewer.remoteView) {
+            viewer.remoteView.removeEventListener('loadeddata', viewer.loadedDataCallback);
             viewer.remoteView.srcObject = null;
         }
 
