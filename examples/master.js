@@ -142,7 +142,8 @@ async function startMaster(localView, remoteView, formValues, onStatsReport, onR
         master.channelHelper.getSignalingClient().open();
     } catch (e) {
         console.error(`[${role}] Encountered error starting:`, e);
-        $('#stop-master-button').click();
+        // $('#stop-master-button').click();
+        errorMessage('Expired credentials, please re-scan the QR code');
     }
 }
 

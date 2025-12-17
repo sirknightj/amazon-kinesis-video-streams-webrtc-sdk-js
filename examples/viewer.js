@@ -827,6 +827,7 @@ async function startViewer(localView, remoteView, formValues, onStatsReport, rem
         console.log('[VIEWER] Starting viewer connection');
         viewer.signalingClient.open();
     } catch (e) {
+        errorMessage('Expired credentials, please re-scan the QR code');
         console.error('[VIEWER] Encountered error starting:', e);
     }
 }
