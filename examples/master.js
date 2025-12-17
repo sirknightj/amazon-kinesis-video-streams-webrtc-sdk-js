@@ -54,6 +54,9 @@ const maxAPICallRetriesPerConnectionAttempt = 5;
 const millisecondsInTenMinutes = 600_000;
 
 async function startMaster(localView, remoteView, formValues, onStatsReport, onRemoteDataMessage) {
+    statusMessage('Connecting to signaling');
+    errorMessage('');
+
     const role = ROLE;
     master = {...masterDefaults};
     master.clientId = formValues.clientId;
@@ -147,6 +150,9 @@ registerMasterSignalingClientCallbacks = (signalingClient, formValues, onStatsRe
     const role = ROLE;
 
     signalingClient.on('open', async () => {
+        statusMessage('Signaling connected');
+        errorMessage('');
+
         const runId = ++master.runId;
         master.websocketOpened = true;
         const signalingConnected = new Date();
@@ -172,6 +178,9 @@ registerMasterSignalingClientCallbacks = (signalingClient, formValues, onStatsRe
     });
 
     signalingClient.on('sdpOffer', async (offer, remoteClientId) => {
+        statusMessage('Received SDP offer, establishing connection...');
+        errorMessage('');
+
         console.log(`[${role}] Received SDP offer from`, remoteClientId || 'remote');
         master.sdpOfferReceived = true;
         master.currentJoinStorageSessionRetries = 0;
@@ -228,9 +237,9 @@ registerMasterSignalingClientCallbacks = (signalingClient, formValues, onStatsRe
         // If in WebRTC ingestion mode, retry if no connection was established within 30 seconds.
         // Note: This is an interim setting - the viewer application will retry after 30 seconds if the connection through the WebRTC Ingestion mode is not successful.
         if (master.channelHelper.isIngestionEnabled()) {
-            const CHECK_INTERVAL_SECONDS = 5;
-            const RETRY_TIMEOUT_SECONDS = 30;
-            
+            const CHECK_INTERVAL_SECONDS = 1;
+            const RETRY_TIMEOUT_SECONDS = 7;
+
             for (let i = CHECK_INTERVAL_SECONDS; i <= RETRY_TIMEOUT_SECONDS; i += CHECK_INTERVAL_SECONDS) {
                 setTimeout(function () {
                     // check the state each 5 seconds
@@ -513,6 +522,9 @@ async function callJoinStorageSessionUntilSDPOfferReceived(runId) {
                     // We should retry if there's an internal error
                     e.statusCode === 500
                 );
+
+            statusMessage('');
+            errorMessage('Too many people connected! Please try again in a bit.');
         }
         shouldRetryCallingJoinStorageSession = shouldRetryCallingJoinStorageSession && master.currentJoinStorageSessionRetries <= maxAPICallRetriesPerConnectionAttempt;
         await new Promise(resolve => setTimeout(resolve, calculateJoinStorageSessionDelayMilliseconds()));
@@ -521,6 +533,10 @@ async function callJoinStorageSessionUntilSDPOfferReceived(runId) {
 }
 
 async function connectToMediaServer(runId) {
+
+    statusMessage('Call JoinStorageSessionAsViewer API');
+    errorMessage('');
+
     const role = ROLE;
     console.log(`[${role}]`, `Joining storage session${role === 'VIEWER' ? ' as viewer' : ''}...`);
     const success = await callJoinStorageSessionUntilSDPOfferReceived(runId);

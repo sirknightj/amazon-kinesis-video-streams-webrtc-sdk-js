@@ -156,6 +156,9 @@ function onStop() {
         return;
     }
 
+    errorMessage('');
+    statusMessage('');
+
     if (!$('#master').hasClass('d-none')) {
         stopMaster();
         $('#master').addClass('d-none');
@@ -170,7 +173,9 @@ function onStop() {
     } else {
         stopViewer();
         $('#viewer').addClass('d-none');
+        $('#self-view').removeClass('d-none');
     }
+    $('#viewer-button').removeClass('d-none');
 
     if (getFormValues().enableDQPmetrics) {
         $('#dqpmetrics').addClass('d-none');
@@ -181,7 +186,7 @@ function onStop() {
         $('#timeline-profiling').addClass('d-none');
     }
 
-    $('#form').removeClass('d-none');
+    // $('#form').removeClass('d-none');
     $('#join-storage-session-button').addClass('d-none');
     $('#join-storage-session-as-viewer-button').addClass('d-none');
     ROLE = null;
@@ -217,6 +222,10 @@ $('#master-button').click(async () => {
     const localMessage = $('#master .local-message')[0];
     const remoteMessage = $('#master .remote-message')[0];
 
+    if (ROLE === 'VIEWER') {
+        $('#self-view').addClass('d-none');
+    }
+
     $(remoteMessage).empty();
     localMessage.value = '';
     toggleDataChannelElements();
@@ -248,6 +257,8 @@ $('#viewer-button').click(async () => {
         return;
     }
     const formValues = getFormValues();
+
+    $('#viewer-button').addClass('d-none');
 
     if (formValues.autoDetermineMediaIngestMode) {
         channelHelper = new ChannelHelper(formValues.channelName,
@@ -308,9 +319,19 @@ function updateViewerUI() {
     $('#master-heading').text('Viewer');
     $('#master-section-heading').text('Return Channel');
     $('#master-viewer-heading').text('From Master');
+    $('#master-viewer-heading').addClass('d-none');
     $('#stop-master-button').text('Stop Viewer');
     $('#master-data-channel-input').text('DataChannel message to send to master');
     $('#master-button').click();
+}
+
+function statusMessage(statusStr) {
+    $('#status').text(statusStr);
+}
+
+function errorMessage(errorMessageStr) {
+    $('#errorMessage').text(errorMessageStr);
+    $('#errorMessage').css('color', 'red');
 }
 
 $('#stop-viewer-button').click(onStop);
@@ -466,6 +487,8 @@ async function printPeerConnectionStateInfo(event, logPrefix, remoteClientId) {
     const rtcPeerConnection = event.target;
     console.debug(logPrefix, 'PeerConnection state:', rtcPeerConnection.connectionState);
     if (rtcPeerConnection.connectionState === 'connected') {
+        statusMessage('');
+        errorMessage('');
         console.log(logPrefix, 'Connection to peer successful!');
         const stats = await rtcPeerConnection.getStats();
         if (!stats) return;
@@ -481,16 +504,16 @@ async function printPeerConnectionStateInfo(event, logPrefix, remoteClientId) {
                     logSelectedCandidate();
                 } else {
                     // Find nominated candidate pair
-                    const nominatedPair = Array.from(stats.values()).find(report => 
-                    report.type === 'candidate-pair' && 
+                    const nominatedPair = Array.from(stats.values()).find(report =>
+                    report.type === 'candidate-pair' &&
                     report.nominated === true
                     );
-            
+
                     if (nominatedPair) {
-                        // Get local and remote candidate detailsl;                     
+                        // Get local and remote candidate detailsl;
                         const localCandidate = stats.get(nominatedPair.localCandidateId);
                         const remoteCandidate = stats.get(nominatedPair.remoteCandidateId);
-                        
+
                         if (localCandidate && remoteCandidate) {
                             console.debug(`Chosen candidate pair (${trackType || 'unknown'}):`, {
                                 local: {
@@ -518,6 +541,8 @@ async function printPeerConnectionStateInfo(event, logPrefix, remoteClientId) {
             }
         });
     } else if (rtcPeerConnection.connectionState === 'failed') {
+        statusMessage('');
+        errorMessage('Unable to connect to the storage session, try again.');
         if (remoteClientId) {
             removeViewerTrackFromMaster(remoteClientId);
         }
@@ -1019,7 +1044,7 @@ $('#codec-filter-toggle').on('change', (event) => {
 
 $(document).ready(() => {
     loadCodecPreferences();
-    
+
     // click start based on the url params
     if (urlParams.has('view')) {
         const viewMode = urlParams.get('view');
