@@ -1061,7 +1061,7 @@ $(document).ready(() => {
         if (viewMode === 'master') {
             $('#master-button').click();
         } else if (viewMode === 'viewer') {
-            // $('#viewer-button').click();
+            $('#viewer-button').click();
         }
     }
 });
